@@ -40,6 +40,17 @@ fn compose_main_table(settings: &Settings, credentials_path: &str, rules_path: &
     doc["udp_connections_timeout_secs"] =
         value(settings.get_udp_connections_timeout().as_secs() as i64);
     doc["speedtest_enable"] = value(*settings.get_speedtest_enable());
+    if let Some(path) = settings.get_speedtest_path().as_ref() {
+        doc["speedtest_path"] = value(path.clone());
+    } else {
+        doc.remove("speedtest_path");
+    }
+    doc["ping_enable"] = value(*settings.get_ping_enable());
+    if let Some(path) = settings.get_ping_path().as_ref() {
+        doc["ping_path"] = value(path.clone());
+    } else {
+        doc.remove("ping_path");
+    }
 
     doc.to_string()
 }

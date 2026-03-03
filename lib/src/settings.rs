@@ -178,17 +178,17 @@ pub struct Settings {
     #[serde(deserialize_with = "deserialize_rules")]
     pub(crate) rules_engine: Option<rules::RulesEngine>,
 
-    /// Whether speedtest is available on the main hosts via `/speed` path.
+    /// Whether speedtest is available on the main hosts.
     #[serde(default = "Settings::default_speedtest_enable")]
     pub(crate) speedtest_enable: bool,
     /// Whether ping is available on the main hosts.
     #[serde(default = "Settings::default_ping_enable")]
     pub(crate) ping_enable: bool,
     /// Optional path prefix for ping requests on main hosts.
-    #[serde(default)]
+    #[serde(default = "Settings::default_ping_path")]
     pub(crate) ping_path: Option<String>,
     /// Optional path prefix for speedtest requests on main hosts.
-    #[serde(default)]
+    #[serde(default = "Settings::default_speedtest_path")]
     pub(crate) speedtest_path: Option<String>,
     /// Default maximum number of simultaneous HTTP/1 and HTTP/2 connections per client credentials.
     /// TrustTunnel clients open 8 HTTP/2 connections by default, so set this to
@@ -566,8 +566,16 @@ impl Settings {
         false
     }
 
+    pub fn default_speedtest_path() -> Option<String> {
+        Some("/speedtest".to_string())
+    }
+
     pub fn default_ping_enable() -> bool {
         false
+    }
+
+    pub fn default_ping_path() -> Option<String> {
+        Some("/ping".to_string())
     }
 
     fn validate_request_path(name: &str, path: &Option<String>) -> Result<(), ValidationError> {
@@ -879,8 +887,8 @@ impl SettingsBuilder {
                 rules_engine: Some(rules::RulesEngine::default_allow()),
                 speedtest_enable: Settings::default_speedtest_enable(),
                 ping_enable: Settings::default_ping_enable(),
-                ping_path: None,
-                speedtest_path: None,
+                ping_path: Settings::default_ping_path(),
+                speedtest_path: Settings::default_speedtest_path(),
                 default_max_http2_conns_per_client: None,
                 default_max_http3_conns_per_client: None,
                 built: true,
