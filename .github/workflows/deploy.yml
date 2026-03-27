@@ -29,6 +29,7 @@ jobs:
           toolchain: ${{ env.RUST_CHANNEL }}
 
       - name: Verify tag matches crate version
+        shell: bash
         run: |
           version_from_tag="${GITHUB_REF_NAME#v}"
           version_from_cargo="$(sed -n 's/^version = "\(.*\)"$/\1/p' endpoint/Cargo.toml | head -n 1)"
@@ -36,6 +37,7 @@ jobs:
           test "${version_from_tag}" = "${version_from_cargo}"
 
       - name: Build and package release artifacts
+        shell: bash
         run: |
           set -euo pipefail
 
