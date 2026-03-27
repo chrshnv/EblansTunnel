@@ -34,9 +34,8 @@ WORKDIR /trusttunnel_endpoint
 # Persist endpoint state/configuration under this directory:
 # - vpn.toml
 # - hosts.toml
-# - credentials.toml
+# - users.sqlite
 # - rules.toml
 # - certs/
 VOLUME /trusttunnel_endpoint/
 ENTRYPOINT ["/scripts/docker-entrypoint.sh"]
-

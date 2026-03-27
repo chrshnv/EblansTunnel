@@ -20,7 +20,12 @@ pub(crate) enum AuthenticationPolicy<'this> {
     Default,
     /// The whole connection is authenticated.
     /// Contains the authenticated info.
-    Authenticated(authentication::Source<'this>),
+    Authenticated(AuthenticatedConnection<'this>),
+}
+
+#[derive(Clone)]
+pub(crate) struct AuthenticatedConnection<'this> {
+    pub source: authentication::Source<'this>,
 }
 
 pub(crate) struct Tunnel {
@@ -151,18 +156,15 @@ impl Tunnel {
                         .map(|x| x.map(authentication::Source::into_owned));
                     let protocol = self.downstream.protocol();
                     if let Ok(Some(source)) = auth_info {
-                        let authenticated = self
+                        let status = self
                             .context
                             .authenticator
                             .as_ref()
-                            .map(|a| a.authenticate(&source, &self.id) == Status::Pass)
-                            .unwrap_or(false);
-                        if authenticated {
-                            let creds = match &source {
-                                authentication::Source::ProxyBasic(s) => s.as_ref(),
-                                authentication::Source::Sni(s) => s.as_ref(),
-                            };
-                            match limiter.try_acquire(creds, protocol) {
+                            .map(|a| a.authenticate(&source, &self.id))
+                            .unwrap_or(Status::Reject);
+
+                        if let Status::Pass(user) = status {
+                            match limiter.try_acquire(&user.username, protocol) {
                                 Some(guard) => {
                                     self.connection_guard = Some(guard);
                                 }
@@ -209,8 +211,10 @@ impl Tunnel {
                     context.authenticator.clone(),
                 ) {
                     (Ok(Some(source)), _, Some(authenticator)) => {
-                        match authenticator.authenticate(&source, &log_id) {
-                            Status::Pass => Some(source),
+                        let authenticated = authenticator.authenticate(&source, &log_id);
+
+                        match authenticated {
+                            Status::Pass(_user) => Some(source),
                             Status::Reject => {
                                 let err = ConnectionError::Authentication(
                                     "Authentication failed".to_string(),
@@ -221,10 +225,10 @@ impl Tunnel {
                             }
                         }
                     }
-                    (Ok(None), AuthenticationPolicy::Authenticated(x), Some(_)) => Some(x),
+                    (Ok(None), AuthenticationPolicy::Authenticated(x), Some(_)) => Some(x.source),
                     (Ok(x), policy, None) => x.or(match policy {
                         AuthenticationPolicy::Default => None,
-                        AuthenticationPolicy::Authenticated(y) => Some(y),
+                        AuthenticationPolicy::Authenticated(y) => Some(y.source),
                     }),
                     (Ok(None), AuthenticationPolicy::Default, Some(_)) => {
                         let err = ConnectionError::Authentication(

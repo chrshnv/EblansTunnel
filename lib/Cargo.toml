@@ -13,6 +13,7 @@ doctest = false
 cc = "1.0.79"
 
 [dependencies]
+argon2 = "0.5"
 async-trait = "0.1.68"
 base64 = "0.21.2"
 tls-parser = "0.12.2"
@@ -32,11 +33,14 @@ macros = { version = "0.1.0", path = "../macros", optional = true }
 once_cell = "1.18.0"
 prometheus = { version = "0.14", features = ["process"] }
 quiche = { version = "0.24.5", features = ["qlog", "boringssl-boring-crate"] }
+rand_core = { version = "0.6", features = ["getrandom"] }
 ring = "0.17.12"
+rusqlite = { version = "0.32", features = ["bundled"] }
 rustls = { version = "0.23.37", features = ["logging"] }
 rustls-native-certs = "0.7"
 rustls-pki-types = "1.13.2"
 serde = "1.0.164"
+serde_json = "1.0"
 smallvec = "1.10.0"
 socket2 = "0.5"
 tokio = { version = "1.42", features = ["net", "rt", "sync", "time", "macros", "rt-multi-thread"] }

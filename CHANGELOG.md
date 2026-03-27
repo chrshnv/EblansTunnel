@@ -2,6 +2,9 @@
 
 ## 1.0.17
 
+- [Feature] Add `users_db_file` SQLite-backed user storage and loopback `management_api` support for `POST /users`, with new users activated immediately.
+- [Security] Hash SQLite-backed user passwords with Argon2; `--client_config` remains available only for legacy `credentials_file` deployments.
+
 - [Fix]     Reverse proxy routing for H2/H3.
 - [Feature] Add `ping_enable`, `ping_path`, `speedtest_enable` and `speedtest_path` config keys to configure ping and speedtest handlers.
 - [Feature] Add `auth_failure_status_code` config key to control the HTTP status code returned on authentication failure (407 or 405). Defaults to 407.

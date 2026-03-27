@@ -22,7 +22,6 @@ use std::{iter, slice};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio_rustls::TlsConnector;
-use trusttunnel::authentication::{registry_based::RegistryBasedAuthenticator, Authenticator};
 use trusttunnel::core::Core;
 use trusttunnel::log_utils;
 use trusttunnel::settings::{
@@ -30,6 +29,7 @@ use trusttunnel::settings::{
     TlsHostsSettings,
 };
 use trusttunnel::shutdown::Shutdown;
+use trusttunnel::user_store::UserRegistry;
 
 pub const MAIN_DOMAIN_NAME: &str = "localhost";
 pub const ENDPOINT_IP: Ipv4Addr = Ipv4Addr::LOCALHOST;
@@ -280,15 +280,8 @@ pub async fn run_endpoint(listen_address: &SocketAddr) {
 
 pub async fn run_endpoint_with_settings(settings: Settings, hosts_settings: TlsHostsSettings) {
     let shutdown = Shutdown::new();
-    let authenticator: Option<Arc<dyn Authenticator>> = if !settings.get_clients().is_empty() {
-        Some(Arc::new(RegistryBasedAuthenticator::new(
-            settings.get_clients(),
-        )))
-    } else {
-        None
-    };
-
-    let endpoint = Core::new(settings, authenticator, hosts_settings, shutdown).unwrap();
+    let user_registry = UserRegistry::from_settings(&settings).unwrap();
+    let endpoint = Core::new(settings, user_registry, hosts_settings, shutdown).unwrap();
     endpoint.listen().await.unwrap();
 }
 

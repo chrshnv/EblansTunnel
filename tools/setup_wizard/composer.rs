@@ -7,8 +7,8 @@ use trusttunnel::settings::{
 };
 use trusttunnel::utils::{IterJoin, ToTomlComment};
 
-pub fn compose_document(settings: &Settings, credentials_path: &str, rules_path: &str) -> String {
-    once(compose_main_table(settings, credentials_path, rules_path))
+pub fn compose_document(settings: &Settings, users_db_path: &str, rules_path: &str) -> String {
+    once(compose_main_table(settings, users_db_path, rules_path))
         .chain(once(compose_forward_protocol_table(
             settings.get_forward_protocol(),
         )))
@@ -20,11 +20,11 @@ pub fn compose_document(settings: &Settings, credentials_path: &str, rules_path:
         .join("\n")
 }
 
-fn compose_main_table(settings: &Settings, credentials_path: &str, rules_path: &str) -> String {
+fn compose_main_table(settings: &Settings, users_db_path: &str, rules_path: &str) -> String {
     let mut doc: Document = template_settings::MAIN_TABLE.parse().unwrap();
 
     doc["listen_address"] = value(settings.get_listen_address().to_string());
-    doc["credentials_file"] = value(credentials_path);
+    doc["users_db_file"] = value(users_db_path);
     doc["rules_file"] = value(rules_path);
     doc["ipv6_available"] = value(*settings.get_ipv6_available());
     doc["allow_private_network_connections"] =

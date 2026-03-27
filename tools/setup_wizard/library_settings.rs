@@ -3,18 +3,20 @@ use crate::user_interaction::{
 };
 use crate::Mode;
 use std::fs;
-use toml_edit::{ArrayOfTables, Item, Key, Table};
+use std::path::Path;
 use trusttunnel::authentication::registry_based::Client;
 use trusttunnel::settings::{
     Http1Settings, Http2Settings, ListenProtocolSettings, QuicSettings, Settings,
 };
+use trusttunnel::user_store::SqliteUserStore;
 
 pub const DEFAULT_CREDENTIALS_PATH: &str = "credentials.toml";
+pub const DEFAULT_USERS_DB_PATH: &str = "users.sqlite";
 pub const DEFAULT_RULES_PATH: &str = "rules.toml";
 
 pub struct Built {
     pub settings: Settings,
-    pub credentials_path: String,
+    pub users_db_path: String,
     pub rules_path: String,
 }
 
@@ -36,8 +38,7 @@ pub fn build() -> Built {
         )
         .unwrap();
 
-    // Collect credentials first, then build settings
-    let (credentials_path, clients) = build_credentials();
+    let users_db_path = build_users_db();
 
     Built {
         settings: builder
@@ -46,49 +47,51 @@ pub fn build() -> Built {
                 http2: Some(Http2Settings::builder().build()),
                 quic: Some(QuicSettings::builder().build()),
             })
-            .clients(clients)
+            .users_db_file(users_db_path.clone())
             .build()
             .expect("Couldn't build the library settings"),
-        credentials_path,
+        users_db_path,
         rules_path: build_rules(),
     }
 }
 
-fn build_credentials() -> (String, Vec<Client>) {
-    if crate::get_mode() != Mode::NonInteractive
-        && check_file_exists(".", DEFAULT_CREDENTIALS_PATH)
-        && ask_for_agreement(&format!(
-            "Reuse the existing credentials file: {DEFAULT_CREDENTIALS_PATH}?"
-        ))
-    {
-        let clients = read_credentials_file(DEFAULT_CREDENTIALS_PATH).unwrap_or_default();
-        return (DEFAULT_CREDENTIALS_PATH.into(), clients);
-    }
-
+fn build_users_db() -> String {
     let path = ask_for_input::<String>(
-        "Path to the credentials file",
-        Some(DEFAULT_CREDENTIALS_PATH.into()),
+        "Path to the SQLite users database",
+        Some(DEFAULT_USERS_DB_PATH.into()),
     );
 
-    let users = build_user_list();
+    let clients = if crate::get_mode() != Mode::NonInteractive
+        && check_file_exists(".", DEFAULT_CREDENTIALS_PATH)
+        && ask_for_agreement(&format!(
+            "Import users from the existing credentials file: {DEFAULT_CREDENTIALS_PATH}?"
+        )) {
+        read_credentials_file(DEFAULT_CREDENTIALS_PATH).unwrap_or_default()
+    } else {
+        build_user_list()
+            .into_iter()
+            .map(|(username, password)| Client {
+                username,
+                password,
+                max_http2_conns: None,
+                max_http3_conns: None,
+            })
+            .collect()
+    };
 
-    if checked_overwrite(&path, "Overwrite the existing credentials file?") {
-        fs::write(&path, compose_credentials_content(users.iter().cloned()))
-            .expect("Couldn't write the credentials into a file");
-        println!("The user credentials are written to the file: {}", path);
+    if checked_overwrite(&path, "Overwrite the existing users database?") {
+        if Path::new(&path).is_file() {
+            fs::remove_file(&path).expect("Couldn't remove the existing users database");
+        }
+
+        let store = SqliteUserStore::open(&path).expect("Couldn't initialize the users database");
+        store
+            .import_clients(&clients)
+            .expect("Couldn't import users into the database");
+        println!("The user database is written to the file: {}", path);
     }
 
-    let clients = users
-        .into_iter()
-        .map(|(username, password)| Client {
-            username,
-            password,
-            max_http2_conns: None,
-            max_http3_conns: None,
-        })
-        .collect();
-
-    (path, clients)
+    path
 }
 
 fn read_credentials_file(path: &str) -> Option<Vec<Client>> {
@@ -162,22 +165,6 @@ fn build_user_list() -> Vec<(String, String)> {
     }
 
     list
-}
-
-fn compose_credentials_content(clients: impl Iterator<Item = (String, String)>) -> String {
-    let mut doc = toml_edit::Document::new();
-
-    let x = clients
-        .map(|(u, p)| {
-            Table::from_iter(
-                std::iter::once(("username", u)).chain(std::iter::once(("password", p))),
-            )
-        })
-        .collect::<ArrayOfTables>();
-
-    doc.insert_formatted(&Key::new("client"), Item::ArrayOfTables(x));
-
-    doc.to_string()
 }
 
 fn generate_rules_toml_content(rules_config: &trusttunnel::rules::RulesConfig) -> String {

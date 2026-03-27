@@ -32,8 +32,12 @@ pub enum ValidationError {
     InvalidPath(String),
     /// Invalid rules file
     RulesFile(String),
+    /// Multiple user sources configured at the same time
+    MultipleUserSources,
     /// No credentials configured while listening on a public address
     NoCredentialsOnPublicAddress,
+    /// Invalid management API settings
+    ManagementApi(String),
     /// Invalid auth failure status code
     InvalidAuthFailureStatusCode(u16),
 }
@@ -49,11 +53,16 @@ impl Debug for ValidationError {
             Self::ListenProtocols(x) => write!(f, "Invalid listen protocols settings: {}", x),
             Self::InvalidPath(x) => write!(f, "Invalid request path: {}", x),
             Self::RulesFile(x) => write!(f, "Invalid rules file: {}", x),
+            Self::MultipleUserSources => write!(
+                f,
+                "Configure either credentials_file or users_db_file, not both"
+            ),
             Self::NoCredentialsOnPublicAddress => write!(
                 f,
-                "No credentials configured (credentials_file is missing) while listening on a public address. \
-                This is a security risk. Either configure credentials or use a loopback address (127.0.0.1 or ::1)"
+                "No users configured (credentials_file/users_db_file is missing) while listening on a public address. \
+                This is a security risk. Either configure users or use a loopback address (127.0.0.1 or ::1)"
             ),
+            Self::ManagementApi(x) => write!(f, "Invalid management API settings: {}", x),
             Self::InvalidAuthFailureStatusCode(code) => write!(
                 f,
                 "Invalid auth_failure_status_code: {}. Supported values: 407, 405",
@@ -161,6 +170,9 @@ pub struct Settings {
     #[serde(rename(deserialize = "credentials_file"))]
     #[serde(deserialize_with = "deserialize_clients")]
     pub(crate) clients: Vec<Client>,
+    /// The path to a SQLite database containing endpoint users.
+    #[serde(default)]
+    pub(crate) users_db_file: Option<String>,
     /// The reverse proxy settings.
     /// With this one set up the endpoint does TLS termination on such connections and
     /// translates HTTP/x traffic into HTTP/1.1 protocol towards the server and back
@@ -177,6 +189,8 @@ pub struct Settings {
     pub(crate) icmp: Option<IcmpSettings>,
     /// The metrics gathering request handler settings
     pub(crate) metrics: Option<MetricsSettings>,
+    /// The user management API listener settings.
+    pub(crate) management_api: Option<ManagementApiSettings>,
     /// Path to the rules file for connection filtering.
     /// If not specified or file doesn't exist, all connections are allowed by default.
     #[serde(default)]
@@ -387,6 +401,25 @@ pub struct MetricsSettings {
     pub(crate) request_timeout: Duration,
 }
 
+/// The user management API request handler settings
+#[derive(Serialize, Deserialize)]
+#[cfg_attr(feature = "rt_doc", derive(Getter, RuntimeDoc))]
+pub struct ManagementApiSettings {
+    /// The loopback address to listen on for user management requests
+    #[serde(default = "ManagementApiSettings::default_listen_address")]
+    pub(crate) address: SocketAddr,
+    /// Timeout of a management API request
+    #[serde(default = "ManagementApiSettings::default_request_timeout")]
+    #[serde(rename = "request_timeout_secs")]
+    #[serde(
+        deserialize_with = "deserialize_duration_secs",
+        serialize_with = "serialize_duration_secs"
+    )]
+    pub(crate) request_timeout: Duration,
+    /// Bearer token required for management API requests
+    pub(crate) auth_token: String,
+}
+
 /// The set of HTTP/1.1 listener codec settings
 #[derive(Serialize, Deserialize, Clone)]
 #[cfg_attr(feature = "rt_doc", derive(Getter, RuntimeDoc))]
@@ -505,6 +538,10 @@ pub struct MetricsSettingsBuilder {
     settings: MetricsSettings,
 }
 
+pub struct ManagementApiSettingsBuilder {
+    settings: ManagementApiSettings,
+}
+
 impl Settings {
     pub fn builder() -> SettingsBuilder {
         SettingsBuilder::new()
@@ -528,6 +565,15 @@ impl Settings {
         Self::validate_request_path("speedtest_path", &self.speedtest_path)?;
         Self::validate_request_path_overlaps(&self.ping_path, &self.speedtest_path)?;
 
+        if !self.clients.is_empty() && self.users_db_file.is_some() {
+            return Err(ValidationError::MultipleUserSources);
+        }
+
+        self.management_api
+            .as_ref()
+            .map(|settings| settings.validate(self.users_db_file.is_some()))
+            .transpose()?;
+
         if self.listen_protocols.http1.is_none()
             && self.listen_protocols.http2.is_none()
             && self.listen_protocols.quic.is_none()
@@ -536,7 +582,10 @@ impl Settings {
         }
 
         // Do not start the endpoint without credentials on a public address
-        if self.clients.is_empty() && !self.listen_address.ip().is_loopback() {
+        if self.clients.is_empty()
+            && self.users_db_file.is_none()
+            && !self.listen_address.ip().is_loopback()
+        {
             return Err(ValidationError::NoCredentialsOnPublicAddress);
         }
 
@@ -640,6 +689,7 @@ impl Default for Settings {
             udp_connections_timeout: Settings::default_udp_connections_timeout(),
             forward_protocol: Default::default(),
             clients: Default::default(),
+            users_db_file: None,
             listen_protocols: ListenProtocolSettings {
                 http1: Some(Http1Settings::builder().build()),
                 http2: Some(Http2Settings::builder().build()),
@@ -648,6 +698,7 @@ impl Default for Settings {
             reverse_proxy: None,
             icmp: None,
             metrics: Default::default(),
+            management_api: None,
             rules_engine: Some(rules::RulesEngine::default_allow()),
             speedtest_enable: false,
             ping_enable: Settings::default_ping_enable(),
@@ -879,11 +930,57 @@ impl MetricsSettings {
     }
 }
 
+impl ManagementApiSettings {
+    pub fn builder() -> ManagementApiSettingsBuilder {
+        ManagementApiSettingsBuilder::new()
+    }
+
+    pub fn default_listen_address() -> SocketAddr {
+        (Ipv4Addr::LOCALHOST, 1988).into()
+    }
+
+    pub fn default_request_timeout() -> Duration {
+        Duration::from_secs(3)
+    }
+
+    fn validate(&self, users_db_enabled: bool) -> Result<(), ValidationError> {
+        if !users_db_enabled {
+            return Err(ValidationError::ManagementApi(
+                "management_api requires users_db_file".to_string(),
+            ));
+        }
+
+        if !self.address.ip().is_loopback() {
+            return Err(ValidationError::ManagementApi(
+                "address must be loopback-only in this release".to_string(),
+            ));
+        }
+
+        if self.auth_token.trim().is_empty() {
+            return Err(ValidationError::ManagementApi(
+                "auth_token must not be empty".to_string(),
+            ));
+        }
+
+        Ok(())
+    }
+}
+
 impl Default for MetricsSettings {
     fn default() -> Self {
         Self {
             address: MetricsSettings::default_listen_address(),
             request_timeout: MetricsSettings::default_request_timeout(),
+        }
+    }
+}
+
+impl Default for ManagementApiSettings {
+    fn default() -> Self {
+        Self {
+            address: ManagementApiSettings::default_listen_address(),
+            request_timeout: ManagementApiSettings::default_request_timeout(),
+            auth_token: String::new(),
         }
     }
 }
@@ -905,9 +1002,11 @@ impl SettingsBuilder {
                 forward_protocol: Default::default(),
                 listen_protocols: Default::default(),
                 clients: Default::default(),
+                users_db_file: None,
                 reverse_proxy: None,
                 icmp: None,
                 metrics: Default::default(),
+                management_api: None,
                 rules_engine: Some(rules::RulesEngine::default_allow()),
                 speedtest_enable: Settings::default_speedtest_enable(),
                 ping_enable: Settings::default_ping_enable(),
@@ -1013,6 +1112,12 @@ impl SettingsBuilder {
         self
     }
 
+    /// Set the path to the SQLite users database
+    pub fn users_db_file<S: Into<String>>(mut self, x: S) -> Self {
+        self.settings.users_db_file = Some(x.into());
+        self
+    }
+
     /// Set the ICMP forwarder settings
     pub fn icmp(mut self, x: IcmpSettings) -> Self {
         self.settings.icmp = Some(x);
@@ -1022,6 +1127,12 @@ impl SettingsBuilder {
     /// Set the metrics request listener settings
     pub fn metrics(mut self, x: MetricsSettings) -> Self {
         self.settings.metrics = Some(x);
+        self
+    }
+
+    /// Set the management API listener settings
+    pub fn management_api(mut self, x: ManagementApiSettings) -> Self {
+        self.settings.management_api = Some(x);
         self
     }
 
@@ -1444,6 +1555,40 @@ impl MetricsSettingsBuilder {
     }
 }
 
+impl ManagementApiSettingsBuilder {
+    fn new() -> Self {
+        Self {
+            settings: Default::default(),
+        }
+    }
+
+    /// Set the address to listen on for user management requests
+    pub fn listen_address<A: ToSocketAddrs>(mut self, addr: A) -> io::Result<Self> {
+        self.settings.address = addr
+            .to_socket_addrs()?
+            .next()
+            .ok_or_else(|| io::Error::new(ErrorKind::Other, "Address is parsed to empty list"))?;
+        Ok(self)
+    }
+
+    /// Set the management API request timeout
+    pub fn request_timeout(mut self, v: Duration) -> Self {
+        self.settings.request_timeout = v;
+        self
+    }
+
+    /// Set the bearer token used to authorize management API requests
+    pub fn auth_token<S: Into<String>>(mut self, value: S) -> Self {
+        self.settings.auth_token = value.into();
+        self
+    }
+
+    /// Finalize [`ManagementApiSettings`]
+    pub fn build(self) -> Result<ManagementApiSettings, ValidationError> {
+        Ok(self.settings)
+    }
+}
+
 impl Default for ForwardProtocolSettings {
     fn default() -> Self {
         ForwardProtocolSettings::Direct(DirectForwarderSettings {})
@@ -1706,5 +1851,62 @@ mod tests {
             err,
             ValidationError::InvalidAuthFailureStatusCode(200)
         ));
+    }
+
+    #[test]
+    fn multiple_user_sources_invalid() {
+        let settings = Settings::builder()
+            .listen_address((Ipv4Addr::LOCALHOST, 8443))
+            .unwrap()
+            .clients(vec![Client {
+                username: "alice".into(),
+                password: "secret".into(),
+                max_http2_conns: None,
+                max_http3_conns: None,
+            }])
+            .users_db_file("users.sqlite")
+            .build();
+
+        assert!(matches!(
+            settings,
+            Err(ValidationError::MultipleUserSources)
+        ));
+    }
+
+    #[test]
+    fn management_api_requires_users_db_file() {
+        let settings = Settings::builder()
+            .listen_address((Ipv4Addr::LOCALHOST, 8443))
+            .unwrap()
+            .management_api(
+                ManagementApiSettings::builder()
+                    .listen_address((Ipv4Addr::LOCALHOST, 1988))
+                    .unwrap()
+                    .auth_token("token")
+                    .build()
+                    .unwrap(),
+            )
+            .build();
+
+        assert!(matches!(settings, Err(ValidationError::ManagementApi(_))));
+    }
+
+    #[test]
+    fn management_api_must_bind_loopback() {
+        let settings = Settings::builder()
+            .listen_address((Ipv4Addr::LOCALHOST, 8443))
+            .unwrap()
+            .users_db_file("users.sqlite")
+            .management_api(
+                ManagementApiSettings::builder()
+                    .listen_address((Ipv4Addr::UNSPECIFIED, 1988))
+                    .unwrap()
+                    .auth_token("token")
+                    .build()
+                    .unwrap(),
+            )
+            .build();
+
+        assert!(matches!(settings, Err(ValidationError::ManagementApi(_))));
     }
 }

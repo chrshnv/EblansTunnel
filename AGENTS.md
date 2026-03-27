@@ -15,9 +15,12 @@ traffic.
 - **Language/Version**: Rust 1.85 (edition 2021), pinned via
   `rust-toolchain.toml`
 - **Primary Dependencies**: tokio, rustls, quiche (QUIC/HTTP3), h2, boring
-  (BoringSSL), hyper, clap, sentry, prometheus, rcgen, instant-acme
+  (BoringSSL), hyper, clap, sentry, prometheus, rcgen, instant-acme,
+  rusqlite, argon2
 - **Storage**: TOML configuration files on disk (`vpn.toml`, `hosts.toml`,
-  `credentials.toml`, `rules.toml`); no database
+  `rules.toml`) plus a SQLite users database (`users.sqlite` by default).
+  Legacy `credentials.toml` is still supported for migration/backward
+  compatibility
 - **Testing**: `cargo test` with built-in test harness; hyper and tempfile for
   integration tests; proptest for property-based tests in `deeplink`
 - **Target Platform**: Linux (production), macOS (development)
@@ -29,9 +32,9 @@ traffic.
 ```text
 vpn-libs-endpoint/
 ├── lib/                       # Core library crate (`trusttunnel`)
-│   ├── src/                   # Protocol logic, codecs, forwarders, settings
+│   ├── src/                   # Protocol logic, codecs, forwarders, settings, user store
 │   │   └── authentication/    # Authentication module
-│   └── tests/                 # Integration tests (tunnel, auth, ping, speedtest, reverse proxy)
+│   └── tests/                 # Integration tests (tunnel, auth, ping, speedtest, reverse proxy, management API)
 │       └── common/            # Shared test helpers and fixtures
 ├── endpoint/                  # Binary crate (`trusttunnel_endpoint`)
 │   └── src/main.rs            # CLI entrypoint for the VPN endpoint
@@ -56,7 +59,7 @@ vpn-libs-endpoint/
 ├── .markdownlint.json         # Markdownlint configuration
 ├── vpn.toml                   # Main endpoint settings (generated, gitignored)
 ├── hosts.toml                 # TLS host settings (generated, gitignored)
-├── credentials.toml           # User credentials (generated, gitignored)
+├── users.sqlite               # User database (generated, gitignored)
 ├── rules.toml                 # Connection filtering rules (generated, gitignored)
 └── certs/                     # TLS certificates for tests (generated, gitignored)
 ```
@@ -229,7 +232,7 @@ protocol/deep-link format, library API) when relevant.
 ### IV. Other
 
 1. NEVER commit secrets or real credential files. The `.gitignore` excludes
-   generated configs (`vpn.toml`, `hosts.toml`, `credentials.toml`,
+   generated configs (`vpn.toml`, `hosts.toml`, `users.sqlite`,
    `rules.toml`) and `certs/`. Example configs in the repo are for reference
    only.
 

@@ -249,7 +249,7 @@ Required in non-interactive mode."#,
             if checked_overwrite(&path, "Overwrite the existing library settings file?") {
                 let doc = composer::compose_document(
                     &built.settings,
-                    &built.credentials_path,
+                    &built.users_db_path,
                     &built.rules_path,
                 );
                 fs::write(&path, doc).expect("Couldn't write the library settings to a file");
@@ -316,8 +316,8 @@ fn print_setup_complete_summary(
     );
     println!("  • {}    - TLS host configuration", hosts_settings_path);
     println!(
-        "  • {}  - User credentials",
-        library_settings::DEFAULT_CREDENTIALS_PATH
+        "  • {}      - User database",
+        library_settings::DEFAULT_USERS_DB_PATH
     );
     if let Some(cert) = cert_path {
         println!("  • {}    - TLS certificate", cert);

@@ -3,6 +3,11 @@ pub mod registry_based;
 use crate::log_utils;
 use std::borrow::Cow;
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AuthenticatedUser {
+    pub username: String,
+}
+
 /// Authentication request source
 #[derive(Clone, PartialEq)]
 pub enum Source<'this> {
@@ -26,7 +31,7 @@ impl std::fmt::Debug for Source<'_> {
 #[derive(Clone, PartialEq)]
 pub enum Status {
     /// Success
-    Pass,
+    Pass(AuthenticatedUser),
     /// Failure
     Reject,
 }
@@ -42,6 +47,14 @@ impl Source<'_> {
         match self {
             Source::Sni(x) => Source::Sni(Cow::Owned(x.into_owned())),
             Source::ProxyBasic(x) => Source::ProxyBasic(Cow::Owned(x.into_owned())),
+        }
+    }
+}
+
+impl AuthenticatedUser {
+    pub fn new(username: impl Into<String>) -> Self {
+        Self {
+            username: username.into(),
         }
     }
 }
