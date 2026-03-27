@@ -1,0 +1,149 @@
+name: Release on tag
+
+env:
+  RUST_CHANNEL: 1.85
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux:
+    name: Build ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            target: x86_64-unknown-linux-musl
+            archive_suffix: linux-x86_64
+          - name: linux-aarch64
+            target: aarch64-unknown-linux-musl
+            archive_suffix: linux-aarch64
+    steps:
+      - name: Checkout source code
+        uses: actions/checkout@v4
+
+      - name: Install Rust ${{ env.RUST_CHANNEL }}
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_CHANNEL }}
+
+      - name: Install packaging dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm
+
+      - name: Build release binaries
+        uses: houseabsolute/actions-rust-cross@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          args: --release --locked
+
+      - name: Import signing key
+        if: ${{ secrets.RELEASE_GPG_PRIVATE_KEY != '' && secrets.RELEASE_GPG_PASSPHRASE != '' }}
+        uses: crazy-max/ghaction-import-gpg@v6
+        with:
+          gpg_private_key: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}
+          passphrase: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
+
+      - name: Verify tag matches crate version
+        run: |
+          version_from_tag="${GITHUB_REF_NAME#v}"
+          version_from_cargo="$(sed -n 's/^version = "\(.*\)"$/\1/p' endpoint/Cargo.toml | head -n 1)"
+          test -n "${version_from_cargo}"
+          test "${version_from_tag}" = "${version_from_cargo}"
+
+      - name: Package release artifacts
+        env:
+          TARGET: ${{ matrix.target }}
+          ARCHIVE_SUFFIX: ${{ matrix.archive_suffix }}
+          GPG_KEY_ID: ${{ secrets.RELEASE_GPG_KEY_ID }}
+          RELEASE_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}
+          RELEASE_GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+
+          version="${GITHUB_REF_NAME#v}"
+          release_dir="target/${TARGET}/release"
+          out_dir="${GITHUB_WORKSPACE}/dist"
+
+          mkdir -p "${out_dir}"
+          cd "${release_dir}"
+
+          signed_files=""
+          should_sign="false"
+          if [ -n "${RELEASE_GPG_PRIVATE_KEY}" ] && [ -n "${RELEASE_GPG_PASSPHRASE}" ] && [ -n "${GPG_KEY_ID}" ]; then
+            should_sign="true"
+          fi
+
+          for bin in trusttunnel_endpoint setup_wizard; do
+            llvm-objcopy --only-keep-debug "${bin}" "${bin}.debug"
+            llvm-strip "${bin}"
+            llvm-objcopy --add-gnu-debuglink="${bin}.debug" "${bin}"
+            if [ "${should_sign}" = "true" ]; then
+              gpg \
+                --batch \
+                --yes \
+                --pinentry-mode loopback \
+                --local-user "${GPG_KEY_ID}" \
+                --detach-sign \
+                --output "${bin}.sig" \
+                "${bin}"
+              signed_files="${signed_files} ${bin}.sig"
+            fi
+          done
+
+          cp "${GITHUB_WORKSPACE}/LICENSE" .
+          cp "${GITHUB_WORKSPACE}/scripts/trusttunnel.service.template" .
+
+          archive_name="trusttunnel-v${version}-${ARCHIVE_SUFFIX}"
+          tar zcf "${out_dir}/${archive_name}.tar.gz" \
+            --transform "s,^,${archive_name}/," \
+            trusttunnel_endpoint \
+            setup_wizard \
+            ${signed_files} \
+            LICENSE \
+            trusttunnel.service.template
+
+          debug_archive_name="${archive_name}-dbgsym"
+          tar zcf "${out_dir}/${debug_archive_name}.tar.gz" \
+            --transform "s,^,${debug_archive_name}/," \
+            trusttunnel_endpoint.debug \
+            setup_wizard.debug
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub release
+    runs-on: ubuntu-latest
+    needs: build-linux
+    permissions:
+      contents: write
+    steps:
+      - name: Download packaged artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          body: See [CHANGELOG.md](https://github.com/${{ github.repository }}/blob/${{ github.ref_name }}/CHANGELOG.md) for the list of changes.
+          files: dist/*.tar.gz
