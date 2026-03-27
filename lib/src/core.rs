@@ -701,7 +701,12 @@ impl Core {
                 None => (tunnel::AuthenticationPolicy::Default, None),
                 Some((authenticator, credentials)) => {
                     let auth = authentication::Source::Sni(credentials.into());
-                    match authenticator.authenticate(&auth, &tunnel_id) {
+
+                    let authenticated = tokio::task::block_in_place(|| {
+                        authenticator.authenticate(&auth, &tunnel_id)
+                    });
+
+                    match authenticated {
                         authentication::Status::Pass => {
                             let guard = context.connection_limiter.as_ref().and_then(|limiter| {
                                 let creds = match &auth {

@@ -151,12 +151,21 @@ impl Tunnel {
                         .map(|x| x.map(authentication::Source::into_owned));
                     let protocol = self.downstream.protocol();
                     if let Ok(Some(source)) = auth_info {
-                        let authenticated = self
-                            .context
-                            .authenticator
-                            .as_ref()
-                            .map(|a| a.authenticate(&source, &self.id) == Status::Pass)
-                            .unwrap_or(false);
+                        let ctx = self.context.clone();
+                        let auth_id = self.id.clone();
+
+                        let (authenticated, source) = tokio::task::spawn_blocking(move || {
+                            let result = ctx
+                                .authenticator
+                                .as_ref()
+                                .map(|a| a.authenticate(&source, &auth_id) == Status::Pass)
+                                .unwrap_or(false);
+
+                            (result, source)
+                        })
+                        .await
+                        .expect("Authentication blocked task panicked");
+
                         if authenticated {
                             let creds = match &source {
                                 authentication::Source::ProxyBasic(s) => s.as_ref(),
@@ -209,7 +218,14 @@ impl Tunnel {
                     context.authenticator.clone(),
                 ) {
                     (Ok(Some(source)), _, Some(authenticator)) => {
-                        match authenticator.authenticate(&source, &log_id) {
+                        let (authenticated, source) = tokio::task::spawn_blocking(move || {
+                            let status = authenticator.authenticate(&source, &log_id);
+                            (status, source)
+                        })
+                        .await
+                        .expect("Authentication blocked task panicked");
+
+                        match authenticated {
                             Status::Pass => Some(source),
                             Status::Reject => {
                                 let err = ConnectionError::Authentication(
