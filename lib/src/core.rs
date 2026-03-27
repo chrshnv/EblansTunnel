@@ -723,9 +723,7 @@ impl Core {
                 Some((authenticator, credentials)) => {
                     let auth = authentication::Source::Sni(credentials.into());
 
-                    let authenticated = tokio::task::block_in_place(|| {
-                        authenticator.authenticate(&auth, &tunnel_id)
-                    });
+                    let authenticated = authenticator.authenticate(&auth, &tunnel_id);
 
                     match authenticated {
                         authentication::Status::Pass(user) => {
