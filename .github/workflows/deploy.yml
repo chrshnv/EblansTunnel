@@ -35,6 +35,9 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_CHANNEL }}
+          targets: |
+            x86_64-unknown-linux-musl,
+            aarch64-unknown-linux-musl 
 
       - name: Install packaging dependencies
         run: |
