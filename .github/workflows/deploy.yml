@@ -42,7 +42,7 @@ jobs:
       - name: Install packaging dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm
+          sudo apt-get install -y llvm musl musl-tools
 
       - name: Build release binaries
         uses: houseabsolute/actions-rust-cross@v1
