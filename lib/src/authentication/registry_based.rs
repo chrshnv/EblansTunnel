@@ -7,7 +7,7 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 
 /// A client descriptor
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct Client {
     /// The client username
     pub username: String,
@@ -52,7 +52,22 @@ impl Authenticator for RegistryBasedAuthenticator {
             authentication::Source::Sni(str) => str,
         };
         if self.clients.contains(creds.as_ref()) {
-            authentication::Status::Pass
+            let username = BASE64_ENGINE
+                .decode(creds.as_ref())
+                .ok()
+                .and_then(|bytes| String::from_utf8(bytes).ok())
+                .and_then(|decoded| {
+                    decoded
+                        .split_once(':')
+                        .map(|(username, _)| username.to_string())
+                });
+
+            match username {
+                Some(username) => {
+                    authentication::Status::Pass(authentication::AuthenticatedUser::new(username))
+                }
+                None => authentication::Status::Reject,
+            }
         } else {
             authentication::Status::Reject
         }

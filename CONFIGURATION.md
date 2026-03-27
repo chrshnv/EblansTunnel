@@ -9,7 +9,7 @@ This document describes all available configuration settings and configuration f
 - [Configuration Files](#configuration-files)
     - [Main Settings File (vpn.toml)](#main-settings-file-vpntoml)
     - [TLS Hosts Settings File (hosts.toml)](#tls-hosts-settings-file-hoststoml)
-    - [Credentials File (credentials.toml)](#credentials-file-credentialstoml)
+    - [Users Database (users.sqlite)](#users-database-userssqlite)
     - [Rules File (rules.toml)](#rules-file-rulestoml)
 - [Settings Reference](#settings-reference)
     - [Core Settings](#core-settings)
@@ -18,6 +18,7 @@ This document describes all available configuration settings and configuration f
     - [Reverse Proxy Settings](#reverse-proxy-settings)
     - [ICMP Settings](#icmp-settings)
     - [Metrics Settings](#metrics-settings)
+    - [Management API Settings](#management-api-settings)
 - [TLS Hosts Reference](#tls-hosts-reference)
 - [Rules Reference](#rules-reference)
 - [Runtime Configuration](#runtime-configuration)
@@ -26,12 +27,12 @@ This document describes all available configuration settings and configuration f
 
 ## Overview
 
-The TrustTunnel endpoint uses TOML-formatted configuration files. The main
-configuration is split into:
+The TrustTunnel endpoint uses TOML-formatted configuration files plus a SQLite
+users database. The main configuration is split into:
 
 1. **Main settings file** - Core endpoint configuration (timeouts, protocols, etc.)
 2. **TLS hosts settings file** - TLS certificate and hostname configuration
-3. **Credentials file** - Client authentication credentials
+3. **Users database** - Client authentication data stored in SQLite
 4. **Rules file** - Connection filtering rules
 
 The `setup_wizard` tool can generate these files interactively.
@@ -79,6 +80,10 @@ The endpoint binary accepts the following command line arguments:
 ./trusttunnel_endpoint vpn.toml hosts.toml -c username -a vpn.example.com:443
 ```
 
+`--client_config` works only when users come from legacy `credentials_file`.
+When `users_db_file` is enabled, passwords are hashed and client configs should
+be delivered at user-creation time through the management API response.
+
 ---
 
 ## Configuration Files
@@ -116,8 +121,8 @@ tcp_connections_timeout_secs = 604800
 # Timeout of tunneled UDP "connections" (seconds)
 udp_connections_timeout_secs = 300
 
-# Path to credentials file
-credentials_file = "credentials.toml"
+# Path to the SQLite users database
+users_db_file = "users.sqlite"
 
 # Path to rules file (optional)
 rules_file = "rules.toml"
@@ -202,19 +207,20 @@ private_key_path = "certs/key.pem"
 # private_key_path = "certs/key.pem"
 ```
 
-### Credentials File (credentials.toml)
+### Users Database (users.sqlite)
 
-Contains client authentication credentials. Example:
+The default user store is a SQLite database referenced by `users_db_file`.
+`setup_wizard` creates this file automatically and stores passwords as Argon2
+hashes.
 
-```toml
-[[client]]
-username = "user1"
-password = "secure_password_1"
+Legacy `credentials_file = "credentials.toml"` is still supported for backward
+compatibility and migration, but new deployments should prefer `users_db_file`.
 
-[[client]]
-username = "user2"
-password = "secure_password_2"
-```
+When `users_db_file` is used, create users through the optional loopback-only
+management API (`POST /users`). That API can return a client config or deep-link
+at creation time. `trusttunnel_endpoint --client_config` only works with the
+legacy `credentials_file` mode because SQLite-backed passwords are not
+recoverable.
 
 ### Rules File (rules.toml)
 
@@ -257,13 +263,15 @@ action = "deny"
 | `connection_establishment_timeout_secs` | Integer | `30`          | Outgoing connection timeout in seconds                           |
 | `tcp_connections_timeout_secs`          | Integer | `604800`      | Idle TCP connection timeout (1 week)                             |
 | `udp_connections_timeout_secs`          | Integer | `300`         | UDP connection timeout (5 minutes)                               |
-| `credentials_file`                      | String  | -             | Path to credentials file                                         |
+| `users_db_file`                         | String  | -             | Path to the SQLite users database                                |
+| `credentials_file`                      | String  | -             | Legacy path to the TOML credentials file                         |
 | `rules_file`                            | String  | -             | Path to rules file (optional)                                    |
 | `speedtest_enable`                      | Boolean | `false`       | Enable speedtest handler on main hosts                           |
 | `ping_enable`                           | Boolean | `false`       | Enable ping handler on main hosts                                |
 | `ping_path`                             | String  | -             | Optional path prefix for ping on main hosts                      |
 | `speedtest_path`                        | String  | -             | Optional path prefix for speedtest on main hosts                 |
 | `auth_failure_status_code`              | Integer | `407`         | HTTP status code returned on authentication failure (405 or 407) |
+| `[management_api]`                      | Table   | disabled      | Optional loopback-only HTTP API for `POST /users`                |
 
 Ping and speedtest are matched only via their configured paths. Default paths are: `/ping` and `/speedtest`.
 
@@ -381,6 +389,26 @@ request_timeout_secs = 3
 | ------- | ---- | ------- | ----------- |
 | `address` | String | `127.0.0.1:1987` | Metrics endpoint address |
 | `request_timeout_secs` | Integer | `3` | Request timeout in seconds |
+
+### Management API Settings
+
+Optional. Enables a loopback-only HTTP/1 management API for user creation.
+This section requires `users_db_file`.
+
+```toml
+[management_api]
+address = "127.0.0.1:1988"
+request_timeout_secs = 3
+auth_token = "replace-me"
+```
+
+Requests must include `Authorization: Bearer <auth_token>`.
+
+| Setting | Type | Default | Description |
+| ------- | ---- | ------- | ----------- |
+| `address` | String | `127.0.0.1:1988` | Loopback address for the management API |
+| `request_timeout_secs` | Integer | `3` | Request timeout in seconds |
+| `auth_token` | String | - | Bearer token required on every request |
 
 ---
 

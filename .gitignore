@@ -7,5 +7,6 @@ macros/Cargo.lock
 certs/
 vpn.toml
 credentials.toml
+users.sqlite
 hosts.toml
 rules.toml

@@ -114,7 +114,7 @@ Expected files under `/trusttunnel_endpoint`:
 
 - `vpn.toml`
 - `hosts.toml`
-- `credentials.toml`
+- `users.sqlite`
 - Optional: `rules.toml`
 - Optional: `certs/` (if certificate files are referenced from `hosts.toml`)
 

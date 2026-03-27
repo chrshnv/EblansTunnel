@@ -10,17 +10,8 @@ pub static MAIN_TABLE: Lazy<String> = Lazy::new(|| {
         r#"{}
 listen_address = ""
 
-# The path to a TOML file in the following format:
-#
-# ```
-# [[client]]
-# username = "a"
-# password = "b"
-#
-# [[client]]
-# ...
-# ```
-credentials_file = "{}"
+# The path to the SQLite database storing endpoint users.
+users_db_file = "{}"
 
 # The path to a TOML file for connection filtering rules in the following format:
 #
@@ -81,7 +72,7 @@ ping_path = "{}"
 auth_failure_status_code = {}
 "#,
         Settings::doc_listen_address().to_toml_comment(),
-        crate::library_settings::DEFAULT_CREDENTIALS_PATH,
+        crate::library_settings::DEFAULT_USERS_DB_PATH,
         crate::library_settings::DEFAULT_RULES_PATH,
         Settings::doc_ipv6_available().to_toml_comment(),
         Settings::default_ipv6_available(),

@@ -20,13 +20,33 @@ pub fn build(
         .find(|x| x.username == *client)
         .expect("There is no user config for specified username");
 
-    let host = hostsettings
-        .main_hosts
-        .first()
-        .expect("Can't find main host inside hosts config");
+    build_with_credentials(
+        &user.username,
+        &user.password,
+        addresses,
+        hostsettings,
+        custom_sni,
+        client_random_prefix,
+    )
+    .expect("Failed to build client config")
+}
 
-    let certificate =
-        std::fs::read_to_string(&host.cert_chain_path).expect("Failed to load certificate");
+pub fn build_with_credentials(
+    username: &str,
+    password: &str,
+    addresses: Vec<String>,
+    hostsettings: &TlsHostsSettings,
+    custom_sni: Option<String>,
+    client_random_prefix: Option<String>,
+) -> std::io::Result<ClientConfig> {
+    let host = hostsettings.main_hosts.first().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Can't find main host inside hosts config",
+        )
+    })?;
+
+    let certificate = std::fs::read_to_string(&host.cert_chain_path)?;
 
     // Check if certificate is system-verifiable
     let cert_is_system_verifiable = CertificateVerifier::new()
@@ -34,20 +54,20 @@ pub fn build(
         .map(|verifier| verifier.is_system_verifiable(&host.cert_chain_path, &host.hostname))
         .unwrap_or(false);
 
-    ClientConfig {
+    Ok(ClientConfig {
         hostname: host.hostname.clone(),
         addresses,
         custom_sni: custom_sni.unwrap_or_default(),
         has_ipv6: true, // Hardcoded to true, client could change this himself
-        username: user.username.clone(),
-        password: user.password.clone(),
+        username: username.to_string(),
+        password: password.to_string(),
         client_random_prefix: client_random_prefix.unwrap_or_default(),
         skip_verification: false,
         certificate,
         cert_is_system_verifiable,
         upstream_protocol: "http2".into(),
         anti_dpi: false,
-    }
+    })
 }
 
 #[cfg_attr(feature = "rt_doc", derive(Getter, RuntimeDoc))]

@@ -16,9 +16,10 @@ use crate::socks5_forwarder::Socks5Forwarder;
 use crate::tls_demultiplexer::TlsDemux;
 use crate::tls_listener::{TlsAcceptor, TlsListener};
 use crate::tunnel::Tunnel;
+use crate::user_store::UserRegistry;
 use crate::{
-    authentication, http_ping_handler, http_speedtest_handler, log_id, log_utils, metrics,
-    net_utils, reverse_proxy, rules, settings, tls_demultiplexer, tunnel,
+    authentication, http_ping_handler, http_speedtest_handler, log_id, log_utils, management_api,
+    metrics, net_utils, reverse_proxy, rules, settings, tls_demultiplexer, tunnel,
 };
 use socket2::{Domain, Protocol as SockProtocol, SockRef, Socket, Type};
 use std::io;
@@ -72,7 +73,9 @@ impl FatalIoError {
 pub(crate) struct Context {
     pub settings: Arc<Settings>,
     pub authenticator: Option<Arc<dyn authentication::Authenticator>>,
+    pub user_registry: Option<Arc<UserRegistry>>,
     tls_demux: Arc<RwLock<TlsDemux>>,
+    pub tls_hosts_settings: Arc<RwLock<settings::TlsHostsSettings>>,
     pub icmp_forwarder: Option<Arc<IcmpForwarder>>,
     pub shutdown: Arc<Mutex<Shutdown>>,
     /// Channel for propagating fatal IO errors (e.g., EMFILE/ENFILE) from spawned tasks
@@ -101,7 +104,7 @@ impl Core {
 
     pub fn new(
         settings: Settings,
-        authenticator: Option<Arc<dyn authentication::Authenticator>>,
+        user_registry: Option<Arc<UserRegistry>>,
         tls_hosts_settings: settings::TlsHostsSettings,
         shutdown: Arc<Mutex<Shutdown>>,
     ) -> Result<Self, Error> {
@@ -115,33 +118,40 @@ impl Core {
         }
 
         let settings = Arc::new(settings);
+        let tls_hosts_settings = Arc::new(RwLock::new(tls_hosts_settings));
+        let authenticator: Option<Arc<dyn authentication::Authenticator>> = user_registry
+            .clone()
+            .map(|registry| registry as Arc<dyn authentication::Authenticator>);
 
         let (fatal_error, _fatal_error_rx) = watch::channel(None);
-
-        let connection_limiter = if settings.default_max_http2_conns_per_client.is_some()
-            || settings.default_max_http3_conns_per_client.is_some()
-            || settings
-                .clients
-                .iter()
-                .any(|c| c.max_http2_conns.is_some() || c.max_http3_conns.is_some())
-        {
-            Some(Arc::new(ConnectionLimiter::new(
-                &settings.clients,
-                settings.default_max_http2_conns_per_client,
-                settings.default_max_http3_conns_per_client,
-            )))
-        } else {
-            None
+        let tls_demux = {
+            let tls_hosts_settings = tls_hosts_settings.read().unwrap();
+            TlsDemux::new(&settings, &tls_hosts_settings)
+                .map_err(|e| Error::TlsDemultiplexer(e.to_string()))?
         };
+
+        let connection_limiter = user_registry.as_ref().and_then(|registry| {
+            if settings.default_max_http2_conns_per_client.is_some()
+                || settings.default_max_http3_conns_per_client.is_some()
+                || registry.has_connection_limits()
+            {
+                Some(Arc::new(ConnectionLimiter::new(
+                    registry.clone(),
+                    settings.default_max_http2_conns_per_client,
+                    settings.default_max_http3_conns_per_client,
+                )))
+            } else {
+                None
+            }
+        });
 
         Ok(Self {
             context: Arc::new(Context {
                 settings: settings.clone(),
                 authenticator,
-                tls_demux: Arc::new(RwLock::new(
-                    TlsDemux::new(&settings, &tls_hosts_settings)
-                        .map_err(|e| Error::TlsDemultiplexer(e.to_string()))?,
-                )),
+                user_registry,
+                tls_demux: Arc::new(RwLock::new(tls_demux)),
+                tls_hosts_settings,
                 icmp_forwarder: if settings.icmp.is_none() {
                     None
                 } else {
@@ -183,6 +193,14 @@ impl Core {
                 .map_err(|e| io::Error::new(e.kind(), format!("Metrics listener failure: {}", e)))
         };
 
+        let listen_management_api = async {
+            management_api::listen(self.context.clone(), log_utils::IdChain::empty())
+                .await
+                .map_err(|e| {
+                    io::Error::new(e.kind(), format!("Management API listener failure: {}", e))
+                })
+        };
+
         let (mut shutdown_notification, _shutdown_completion) = {
             let shutdown = self.context.shutdown.lock().unwrap();
             (
@@ -206,11 +224,12 @@ impl Core {
                 },
                 Err(_) => Err(io::Error::new(ErrorKind::Other, "Fatal error channel is unexpectedly closed")),
             },
-            x = futures::future::try_join4(
+            x = futures::future::try_join5(
                 listen_tcp,
                 listen_udp,
                 listen_icmp,
                 listen_metrics,
+                listen_management_api,
             ) => x.map(|_| ()),
         }
     }
@@ -221,6 +240,7 @@ impl Core {
         settings: settings::TlsHostsSettings,
     ) -> io::Result<()> {
         let mut demux = self.context.tls_demux.write().unwrap();
+        let mut tls_hosts_settings = self.context.tls_hosts_settings.write().unwrap();
 
         if !settings.is_built() {
             settings.validate().map_err(|e| {
@@ -231,7 +251,8 @@ impl Core {
             })?;
         }
 
-        *demux = TlsDemux::new(&self.context.settings, &settings)?;
+        *tls_hosts_settings = settings;
+        *demux = TlsDemux::new(&self.context.settings, &tls_hosts_settings)?;
         Ok(())
     }
 
@@ -707,14 +728,11 @@ impl Core {
                     });
 
                     match authenticated {
-                        authentication::Status::Pass => {
-                            let guard = context.connection_limiter.as_ref().and_then(|limiter| {
-                                let creds = match &auth {
-                                    authentication::Source::Sni(s) => s.as_ref(),
-                                    authentication::Source::ProxyBasic(s) => s.as_ref(),
-                                };
-                                limiter.try_acquire(creds, protocol)
-                            });
+                        authentication::Status::Pass(user) => {
+                            let guard = context
+                                .connection_limiter
+                                .as_ref()
+                                .and_then(|limiter| limiter.try_acquire(&user.username, protocol));
                             if context.connection_limiter.is_some() && guard.is_none() {
                                 log_id!(
                                     debug,
@@ -723,7 +741,12 @@ impl Core {
                                 );
                                 return;
                             }
-                            (tunnel::AuthenticationPolicy::Authenticated(auth), guard)
+                            (
+                                tunnel::AuthenticationPolicy::Authenticated(
+                                    tunnel::AuthenticatedConnection { source: auth },
+                                ),
+                                guard,
+                            )
                         }
                         authentication::Status::Reject => {
                             log_id!(debug, tunnel_id, "SNI authentication failed");
@@ -782,13 +805,18 @@ impl Core {
 impl Default for Context {
     fn default() -> Self {
         let settings = Arc::new(Settings::default());
+        let tls_hosts_settings = Arc::new(RwLock::new(settings::TlsHostsSettings::default()));
+        let tls_demux = {
+            let tls_hosts_settings = tls_hosts_settings.read().unwrap();
+            TlsDemux::new(&settings, &tls_hosts_settings).unwrap()
+        };
         let (fatal_error, _fatal_error_rx) = watch::channel(None);
         Self {
             settings: settings.clone(),
             authenticator: None,
-            tls_demux: Arc::new(RwLock::new(
-                TlsDemux::new(&settings, &settings::TlsHostsSettings::default()).unwrap(),
-            )),
+            user_registry: None,
+            tls_demux: Arc::new(RwLock::new(tls_demux)),
+            tls_hosts_settings,
             icmp_forwarder: None,
             shutdown: Shutdown::new(),
             fatal_error,

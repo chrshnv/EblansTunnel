@@ -3,12 +3,11 @@ use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::Arc;
 use tokio::signal;
-use trusttunnel::authentication::registry_based::RegistryBasedAuthenticator;
-use trusttunnel::authentication::Authenticator;
 use trusttunnel::client_config;
 use trusttunnel::core::Core;
 use trusttunnel::settings::Settings;
 use trusttunnel::shutdown::Shutdown;
+use trusttunnel::user_store::UserRegistry;
 use trusttunnel::{log_utils, settings};
 
 const VERSION_STRING: &str = env!("CARGO_PKG_VERSION");
@@ -189,12 +188,24 @@ fn main() {
     )
     .expect("Couldn't parse the settings file");
 
-    if settings.get_clients().is_empty() && settings.get_listen_address().ip().is_loopback() {
+    let user_registry =
+        UserRegistry::from_settings(&settings).expect("Couldn't initialize user registry");
+    let has_users = user_registry
+        .as_ref()
+        .map(|registry| registry.has_users())
+        .unwrap_or(false);
+
+    if !has_users && settings.get_listen_address().ip().is_loopback() {
         warn!(
-            "No credentials configured (credentials_file is missing). \
+            "No users configured (credentials_file/users_db_file is missing or empty). \
             Anyone can connect to this endpoint. This is acceptable for local development \
             but should not be used in production."
         );
+    } else if !has_users {
+        eprintln!(
+            "Error: no users configured in credentials_file/users_db_file while listening on a public address"
+        );
+        std::process::exit(1);
     }
 
     let tls_hosts_settings_path = args
@@ -207,6 +218,17 @@ fn main() {
     .expect("Couldn't parse the TLS hosts settings file");
 
     if args.contains_id(CLIENT_CONFIG_PARAM_NAME) {
+        if user_registry
+            .as_ref()
+            .map(|registry| registry.is_sqlite_backed())
+            .unwrap_or(false)
+        {
+            eprintln!(
+                "Error: --client_config is unavailable when users are stored in users_db_file because passwords are hashed. Use the management API create-user response to obtain a client configuration."
+            );
+            std::process::exit(1);
+        }
+
         let username = args.get_one::<String>(CLIENT_CONFIG_PARAM_NAME).unwrap();
         let listen_port = settings.get_listen_address().port();
         let addresses: Vec<String> = args
@@ -329,14 +351,23 @@ fn main() {
             }
         }
 
-        let client_config = client_config::build(
-            username,
+        let client = user_registry
+            .as_ref()
+            .and_then(|registry| registry.get_legacy_client(username))
+            .unwrap_or_else(|| {
+                eprintln!("Error: There is no user config for specified username");
+                std::process::exit(1);
+            });
+
+        let client_config = client_config::build_with_credentials(
+            &client.username,
+            &client.password,
             addresses,
-            settings.get_clients(),
             &tls_hosts_settings,
             custom_sni,
             client_random_prefix,
-        );
+        )
+        .expect("Failed to build client configuration");
 
         let format = args
             .get_one::<String>(FORMAT_PARAM_NAME)
@@ -385,17 +416,10 @@ fn main() {
     };
 
     let shutdown = Shutdown::new();
-    let authenticator: Option<Arc<dyn Authenticator>> = if !settings.get_clients().is_empty() {
-        Some(Arc::new(RegistryBasedAuthenticator::new(
-            settings.get_clients(),
-        )))
-    } else {
-        None
-    };
     let core = Arc::new(
         Core::new(
             settings,
-            authenticator,
+            user_registry,
             tls_hosts_settings,
             shutdown.clone(),
         )

@@ -12,6 +12,7 @@ pub mod net_utils;
 pub mod rules;
 pub mod settings;
 pub mod shutdown;
+pub mod user_store;
 pub mod utils;
 
 mod connection_limiter;
@@ -33,6 +34,7 @@ mod http_speedtest_handler;
 mod http_udp_codec;
 mod icmp_forwarder;
 mod icmp_utils;
+mod management_api;
 mod metrics;
 mod pipe;
 mod quic_multiplexer;

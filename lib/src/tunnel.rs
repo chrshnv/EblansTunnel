@@ -20,7 +20,12 @@ pub(crate) enum AuthenticationPolicy<'this> {
     Default,
     /// The whole connection is authenticated.
     /// Contains the authenticated info.
-    Authenticated(authentication::Source<'this>),
+    Authenticated(AuthenticatedConnection<'this>),
+}
+
+#[derive(Clone)]
+pub(crate) struct AuthenticatedConnection<'this> {
+    pub source: authentication::Source<'this>,
 }
 
 pub(crate) struct Tunnel {
@@ -154,24 +159,20 @@ impl Tunnel {
                         let ctx = self.context.clone();
                         let auth_id = self.id.clone();
 
-                        let (authenticated, source) = tokio::task::spawn_blocking(move || {
+                        let (status, _source) = tokio::task::spawn_blocking(move || {
                             let result = ctx
                                 .authenticator
                                 .as_ref()
-                                .map(|a| a.authenticate(&source, &auth_id) == Status::Pass)
-                                .unwrap_or(false);
+                                .map(|a| a.authenticate(&source, &auth_id))
+                                .unwrap_or(Status::Reject);
 
                             (result, source)
                         })
                         .await
                         .expect("Authentication blocked task panicked");
 
-                        if authenticated {
-                            let creds = match &source {
-                                authentication::Source::ProxyBasic(s) => s.as_ref(),
-                                authentication::Source::Sni(s) => s.as_ref(),
-                            };
-                            match limiter.try_acquire(creds, protocol) {
+                        if let Status::Pass(user) = status {
+                            match limiter.try_acquire(&user.username, protocol) {
                                 Some(guard) => {
                                     self.connection_guard = Some(guard);
                                 }
@@ -226,7 +227,7 @@ impl Tunnel {
                         .expect("Authentication blocked task panicked");
 
                         match authenticated {
-                            Status::Pass => Some(source),
+                            Status::Pass(_user) => Some(source),
                             Status::Reject => {
                                 let err = ConnectionError::Authentication(
                                     "Authentication failed".to_string(),
@@ -237,10 +238,10 @@ impl Tunnel {
                             }
                         }
                     }
-                    (Ok(None), AuthenticationPolicy::Authenticated(x), Some(_)) => Some(x),
+                    (Ok(None), AuthenticationPolicy::Authenticated(x), Some(_)) => Some(x.source),
                     (Ok(x), policy, None) => x.or(match policy {
                         AuthenticationPolicy::Default => None,
-                        AuthenticationPolicy::Authenticated(y) => Some(y),
+                        AuthenticationPolicy::Authenticated(y) => Some(y.source),
                     }),
                     (Ok(None), AuthenticationPolicy::Default, Some(_)) => {
                         let err = ConnectionError::Authentication(

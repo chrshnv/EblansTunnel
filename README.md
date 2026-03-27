@@ -185,8 +185,8 @@ values you could safely use:
 - **The address to listen on** - specify the address for the endpoint to listen
   on. Use `0.0.0.0:443` for native deployments (HTTPS on all interfaces).
   If you run with Docker port mapping `443:8443`, set it to `0.0.0.0:8443`.
-- **Path to credentials file** - path where the user credentials for
-  authorization will be stored.
+- **Path to the SQLite users database** - path where endpoint users will be
+  stored. Passwords are hashed before being written.
 - **Username** - the username the user will use for authorization.
 - **Password** - the user's password.
 - **Add one more user?** - select `yes` if you want to add more users, or `no`
@@ -208,6 +208,13 @@ values you could safely use:
         - A registered domain pointing to your server's IP address
         - Port 80 accessible from the internet (for HTTP-01 challenge), or
         - Ability to add DNS TXT records (for DNS-01 challenge)
+
+  If you enable the optional loopback-only `management_api`, create users
+  through `POST /users`. The endpoint can return a client config or deep-link
+  in that response. `trusttunnel_endpoint --client_config` remains available
+  only for legacy `credentials_file` deployments because SQLite-backed
+  passwords are hashed at rest.
+
     - **Generate a self-signed certificate** - suitable for testing or when using
       the CLI client only. Note: The Flutter client does not support self-signed
       certificates **yet**.

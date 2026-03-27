@@ -14,7 +14,7 @@ check_file() {
 verify_configs() {
     local missing=0
 
-    check_file "credentials.toml" || missing=1
+    check_file "users.sqlite" || missing=1
     check_file "vpn.toml" || missing=1
     check_file "hosts.toml" || missing=1
 
