@@ -48,13 +48,6 @@ jobs:
           target: ${{ matrix.target }}
           args: --release --locked
 
-      - name: Import signing key
-        if: ${{ secrets.RELEASE_GPG_PRIVATE_KEY != '' && secrets.RELEASE_GPG_PASSPHRASE != '' }}
-        uses: crazy-max/ghaction-import-gpg@v6
-        with:
-          gpg_private_key: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}
-          passphrase: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
-
       - name: Verify tag matches crate version
         run: |
           version_from_tag="${GITHUB_REF_NAME#v}"
@@ -66,9 +59,6 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
           ARCHIVE_SUFFIX: ${{ matrix.archive_suffix }}
-          GPG_KEY_ID: ${{ secrets.RELEASE_GPG_KEY_ID }}
-          RELEASE_GPG_PRIVATE_KEY: ${{ secrets.RELEASE_GPG_PRIVATE_KEY }}
-          RELEASE_GPG_PASSPHRASE: ${{ secrets.RELEASE_GPG_PASSPHRASE }}
         run: |
           set -euo pipefail
 
@@ -78,29 +68,11 @@ jobs:
 
           mkdir -p "${out_dir}"
           cd "${release_dir}"
-
-          signed_files=""
-          should_sign="false"
-          if [ -n "${RELEASE_GPG_PRIVATE_KEY}" ] && [ -n "${RELEASE_GPG_PASSPHRASE}" ] && [ -n "${GPG_KEY_ID}" ]; then
-            should_sign="true"
-          fi
-
+         
           for bin in trusttunnel_endpoint setup_wizard; do
             llvm-objcopy --only-keep-debug "${bin}" "${bin}.debug"
             llvm-strip "${bin}"
             llvm-objcopy --add-gnu-debuglink="${bin}.debug" "${bin}"
-            if [ "${should_sign}" = "true" ]; then
-              gpg \
-                --batch \
-                --yes \
-                --pinentry-mode loopback \
-                --local-user "${GPG_KEY_ID}" \
-                --detach-sign \
-                --output "${bin}.sig" \
-                "${bin}"
-              signed_files="${signed_files} ${bin}.sig"
-            fi
-          done
 
           cp "${GITHUB_WORKSPACE}/LICENSE" .
           cp "${GITHUB_WORKSPACE}/scripts/trusttunnel.service.template" .
@@ -110,7 +82,6 @@ jobs:
             --transform "s,^,${archive_name}/," \
             trusttunnel_endpoint \
             setup_wizard \
-            ${signed_files} \
             LICENSE \
             trusttunnel.service.template
 
